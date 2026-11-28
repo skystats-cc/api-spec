@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SkyStats API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Public API for skystats.cc. Hypixel SkyBlock bazaar and status data.
 
@@ -625,16 +625,38 @@ paths:
     get:
       tags: [discord]
       operationId: discordCallback
-      summary: Discord redirects here. Redirects to /me, /settings or /link with a ?discord= result
+      summary: Discord redirects here. Redirects to /me, /paired, /settings or /link with a ?discord= result
       description: |
-        Results: linked, cancelled, alt_needs_plan (on /settings); not_linked, invalid, expired, cancelled (on /link).
-        A successful sign-in sets the ss_session cookie.
+        Connecting Discord from Settings lands on /paired?via=discord, or /settings?discord=cancelled|alt_needs_plan|unavailable.
+        Signing in lands on /me (sets ss_session), or /link?discord=signed_up when this Discord user has no SkyStats account
+        yet: that starts a sign-up (sets ss_pending) and the player pairs Minecraft next. Other /link results: invalid,
+        expired, cancelled, unavailable.
       parameters:
         - { name: code, in: query, schema: { type: string } }
         - { name: state, in: query, schema: { type: string } }
         - { name: error, in: query, schema: { type: string } }
       responses:
         '302': { description: Redirect back to the site }
+
+  /v1/auth/pending:
+    get:
+      tags: [discord]
+      operationId: getPendingSignup
+      summary: The Discord sign-up in progress (signed up with Discord, Minecraft not paired yet)
+      description: Uses the ss_pending cookie. Pairing a Minecraft account from this browser finishes the sign-up.
+      responses:
+        '200':
+          description: Sign-up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingSignup' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [discord]
+      operationId: cancelPendingSignup
+      summary: Sign out of the sign-up and delete it (it holds only the Discord id and name)
+      responses:
+        '204': { description: Deleted }
 
   /v1/me/discord:
     get:
@@ -2604,6 +2626,15 @@ components:
         expiresAt: { type: string, format: date-time }
         pollIntervalSeconds: { type: integer }
 
+    PendingSignup:
+      type: object
+      required: [discordId, discordUsername, createdAt, expiresAt]
+      properties:
+        discordId: { type: string }
+        discordUsername: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: Deleted if Minecraft isn't paired by then (30 days) }
+
     PairingStatus:
       type: object
       required: [status]
@@ -2612,6 +2643,9 @@ components:
           type: string
           enum: [pending, linked, expired]
         account: { $ref: '#/components/schemas/Account' }
+        discordLinked:
+          type: [boolean, 'null']
+          description: Only when the code was made during a Discord sign-up (or from the bot). false means Discord couldn't be linked (a second account on a free plan).
 
     ProfileMember:
       type: object

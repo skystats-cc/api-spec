@@ -31,6 +31,7 @@ export type AlertRule = Schemas['AlertRule'];
 export type NewAlertRule = Schemas['NewAlertRule'];
 export type Goal = Schemas['Goal'];
 export type ApiKey = Schemas['ApiKey'];
+export type PendingSignup = Schemas['PendingSignup'];
 export type GuildSettings = Schemas['GuildSettings'];
 export type Webhook = Schemas['Webhook'];
 export type Notification = Schemas['Notification'];
@@ -225,6 +226,9 @@ export function createSkystatsClient({ baseUrl, timeoutMs = 5000, getToken, getH
       unlink: () => unwrap(() => raw.DELETE('/v1/me/discord')),
       accounts: () => unwrap(() => raw.GET('/v1/me/accounts')),
       switchTo: (uuid: string) => unwrap(() => raw.POST('/v1/me/switch', { body: { uuid } })),
+      /** Signed up with Discord, Minecraft not paired yet (401 when there's no sign-up) */
+      pending: () => unwrap(() => raw.GET('/v1/auth/pending')),
+      cancelPending: () => unwrap(() => raw.DELETE('/v1/auth/pending')),
     },
 
     insight: {

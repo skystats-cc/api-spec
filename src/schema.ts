@@ -496,14 +496,37 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Discord redirects here. Redirects to /me, /settings or /link with a ?discord= result
-         * @description Results: linked, cancelled, alt_needs_plan (on /settings); not_linked, invalid, expired, cancelled (on /link).
-         *     A successful sign-in sets the ss_session cookie.
+         * Discord redirects here. Redirects to /me, /paired, /settings or /link with a ?discord= result
+         * @description Connecting Discord from Settings lands on /paired?via=discord, or /settings?discord=cancelled|alt_needs_plan|unavailable.
+         *     Signing in lands on /me (sets ss_session), or /link?discord=signed_up when this Discord user has no SkyStats account
+         *     yet: that starts a sign-up (sets ss_pending) and the player pairs Minecraft next. Other /link results: invalid,
+         *     expired, cancelled, unavailable.
          */
         get: operations["discordCallback"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Discord sign-up in progress (signed up with Discord, Minecraft not paired yet)
+         * @description Uses the ss_pending cookie. Pairing a Minecraft account from this browser finishes the sign-up.
+         */
+        get: operations["getPendingSignup"];
+        put?: never;
+        post?: never;
+        /** Sign out of the sign-up and delete it (it holds only the Discord id and name) */
+        delete: operations["cancelPendingSignup"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2170,10 +2193,23 @@ export interface components {
             expiresAt: string;
             pollIntervalSeconds: number;
         };
+        PendingSignup: {
+            discordId: string;
+            discordUsername: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Deleted if Minecraft isn't paired by then (30 days)
+             */
+            expiresAt: string;
+        };
         PairingStatus: {
             /** @enum {string} */
             status: "pending" | "linked" | "expired";
             account?: components["schemas"]["Account"];
+            /** @description Only when the code was made during a Discord sign-up (or from the bot). false means Discord couldn't be linked (a second account on a free plan). */
+            discordLinked?: boolean | null;
         };
         ProfileMember: {
             uuid: string;
@@ -3669,6 +3705,45 @@ export interface operations {
         responses: {
             /** @description Redirect back to the site */
             302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getPendingSignup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sign-up */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingSignup"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    cancelPendingSignup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
