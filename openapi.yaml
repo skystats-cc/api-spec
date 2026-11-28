@@ -1,0 +1,3336 @@
+openapi: 3.1.0
+info:
+  title: SkyStats API
+  version: 0.9.0
+  description: |
+    Public API for skystats.cc. Hypixel SkyBlock bazaar and status data.
+
+    Rate limited per client IP. Responses include `x-ratelimit-*` headers.
+
+    ## Authentication
+    - **Mod token** (`Authorization: Bearer ssm_...`): the mod proves the player's identity through
+      Mojang's session server (`/v1/auth/mod/challenge` → Mojang `joinServer` → `/v1/auth/mod/verify`).
+      The player's Minecraft access token is only ever sent to Mojang.
+    - **Web session** (`ss_session` cookie, HttpOnly): created by pairing. The website shows a code,
+      the player runs `/skystats link <code>` in game, and the website's poll receives the cookie.
+servers:
+  - url: https://api.skystats.cc
+    description: Production
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: health
+    description: Liveness and readiness checks (not rate limited)
+  - name: bazaar
+    description: Live and historical bazaar prices for every product
+  - name: status
+    description: Hypixel network status, cached from status.hypixel.net
+  - name: auth
+    description: Mod authentication via Mojang session server, and logout
+  - name: pairing
+    description: Link a browser to a Minecraft account with a short code
+  - name: me
+    description: The signed-in player's account, settings, profiles and co-ops
+  - name: mod
+    description: Endpoints used by the SkyStats mod
+  - name: players
+    description: Public player summaries (opt-in only)
+  - name: billing
+    description: Plans, Stripe Checkout and the customer portal
+  - name: discord
+    description: Sign in with Discord, linking, and switching between your Minecraft accounts
+  - name: alerts
+    description: Alerts, goals, notification preferences and the inbox (Pro and above, except outage and patch notices)
+  - name: market
+    description: Bazaar insight, auctions and items. Raw prices are free; computed insight is Pro or Max
+  - name: methods
+    description: Money-making methods valued from live prices
+  - name: insight
+    description: Sessions, daily summaries, co-op view and notes built from what the mod reports
+  - name: social
+    description: Leaderboards, follows, achievements, Wrapped and public profile looks (all opt-in)
+  - name: platform
+    description: Public API keys, webhooks, feature flags, live data, batch requests and gifts
+  - name: bot
+    description: Used by the SkyStats Discord bot on the internal network only (never through Cloudflare)
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Process is up
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReady
+      summary: Process can reach its database
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: false }
+                  db: { type: string }
+
+  /v1/bazaar:
+    get:
+      tags: [bazaar]
+      operationId: listBazaarProducts
+      summary: Latest prices for every bazaar product
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive search on product id or name
+          schema: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: Products
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [products]
+                properties:
+                  products:
+                    type: array
+                    items: { $ref: '#/components/schemas/BazaarProduct' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/bazaar/{productId}:
+    get:
+      tags: [bazaar]
+      operationId: getBazaarProduct
+      summary: Latest prices for one product
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BazaarProduct' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/bazaar/{productId}/history:
+    get:
+      tags: [bazaar]
+      operationId: getBazaarHistory
+      summary: Price snapshots for one product, oldest first
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 3650, default: 7 }
+      responses:
+        '200':
+          description: History
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [productId, days, snapshots]
+                properties:
+                  productId: { type: string }
+                  days: { type: integer }
+                  snapshots:
+                    type: array
+                    items: { $ref: '#/components/schemas/BazaarSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/status:
+    get:
+      tags: [status]
+      operationId: getHypixelStatus
+      summary: Cached status.hypixel.net summary
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HypixelStatus' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/mod/challenge:
+    post:
+      tags: [auth]
+      operationId: createModChallenge
+      summary: Start mod authentication
+      description: |
+        Returns a one-time `serverId`. The mod calls Mojang's `joinServer` with it, then `/v1/auth/mod/verify`.
+        Valid for 2 minutes.
+      responses:
+        '200':
+          description: Challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModChallenge' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/mod/verify:
+    post:
+      tags: [auth]
+      operationId: verifyModChallenge
+      summary: Finish mod authentication (checked with Mojang hasJoined)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, serverId]
+              properties:
+                username: { type: string, pattern: '^[A-Za-z0-9_]{1,16}$' }
+                serverId: { type: string, pattern: '^[a-f0-9]{40}$' }
+      responses:
+        '200':
+          description: Mod session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: End the current session (clears the web cookie)
+      security: [{ webSession: [] }, { modToken: [] }]
+      responses:
+        '204': { description: Logged out }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/pairing:
+    post:
+      tags: [pairing]
+      operationId: createPairing
+      summary: Create a pairing code to show on the website
+      description: |
+        Keep `secret` in the browser; it's needed to poll. The player runs `command` in game.
+        Codes expire after 10 minutes.
+      responses:
+        '201':
+          description: Pairing created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pairing' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/pairing/{pairingId}/poll:
+    post:
+      tags: [pairing]
+      operationId: pollPairing
+      summary: Check whether the code has been claimed in game
+      description: When the status becomes `linked`, the response sets the `ss_session` cookie (once).
+      parameters:
+        - name: pairingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret]
+              properties:
+                secret: { type: string, minLength: 20, maxLength: 128 }
+      responses:
+        '200':
+          description: Pairing status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairingStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/pairing/claim:
+    post:
+      tags: [pairing]
+      operationId: claimPairing
+      summary: Claim a pairing code from the mod
+      security: [{ modToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, description: 'e.g. ABCD-EFGH (case and dash insensitive)', maxLength: 16 }
+      responses:
+        '200':
+          description: Linked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked, account]
+                properties:
+                  linked: { type: boolean, const: true }
+                  account: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/mod/heartbeat:
+    post:
+      tags: [mod]
+      operationId: modHeartbeat
+      summary: Tell SkyStats the mod is running (every ~5 minutes while on Hypixel)
+      security: [{ modToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modVersion, minecraftVersion]
+              properties:
+                modVersion: { type: string, maxLength: 32 }
+                minecraftVersion: { type: string, maxLength: 32 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, trackingEnabled, nextHeartbeatSeconds]
+                properties:
+                  ok: { type: boolean }
+                  trackingEnabled: { type: boolean }
+                  nextHeartbeatSeconds: { type: integer }
+                  snapshotEverySeconds: { type: integer, description: How often the mod should send /v1/mod/snapshot }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/me:
+    get:
+      tags: [me]
+      operationId: getMe
+      summary: The signed-in account
+      security: [{ webSession: [] }, { modToken: [] }]
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/settings:
+    patch:
+      tags: [me]
+      operationId: updateMySettings
+      summary: Update account settings
+      security: [{ webSession: [] }, { modToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                trackingEnabled:
+                  type: boolean
+                  description: When false, SkyStats stops recording your money history and shows "tracking disabled" to your co-op.
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/profiles:
+    get:
+      tags: [me]
+      operationId: getMyProfiles
+      summary: Your SkyBlock profiles and co-op members
+      security: [{ webSession: [] }, { modToken: [] }]
+      responses:
+        '200':
+          description: Profiles
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyProfiles' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/profiles/refresh:
+    post:
+      tags: [me]
+      operationId: refreshMyProfiles
+      summary: Queue a refresh from the Hypixel API
+      security: [{ webSession: [] }, { modToken: [] }]
+      responses:
+        '202':
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queued]
+                properties:
+                  queued: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/mod/snapshot:
+    post:
+      tags: [mod]
+      operationId: modSnapshot
+      summary: Report the player's own coins (the only source of money history)
+      description: |
+        Hypixel's API policy forbids building stat histories by polling the Public API, so the mod
+        reports the player's own purse (scoreboard) and banks (bank menu). Ignored while tracking is off.
+      security: [{ modToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModSnapshot' }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SnapshotResult' }
+        '202':
+          description: Not stored (too soon, or the profile is being looked up)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SnapshotResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/players/{name}:
+    get:
+      tags: [players]
+      operationId: getPublicPlayer
+      summary: A player's public SkyStats summary
+      description: Only for players who turned on a public profile. Built from SkyStats data only; it never triggers a Hypixel lookup.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_]{1,16}$' }
+      responses:
+        '200':
+          description: Public summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicPlayer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/money:
+    get:
+      tags: [me]
+      operationId: getMyMoney
+      summary: Your money history for one profile, clipped to your tier's retention
+      security: [{ webSession: [] }, { modToken: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+        - name: range
+          in: query
+          schema: { type: string, enum: ['1d', '7d', '30d', '90d', '1y', all], default: '7d' }
+      responses:
+        '200':
+          description: History
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MoneyHistory' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/privacy:
+    get:
+      tags: [me]
+      operationId: getMyPrivacy
+      summary: Your privacy settings (everything social is off by default)
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacySettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [me]
+      operationId: updateMyPrivacy
+      summary: Change privacy settings
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrivacySettingsPatch' }
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacySettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/export:
+    get:
+      tags: [me]
+      operationId: exportMyData
+      summary: Download everything SkyStats holds about you (UK GDPR access and portability)
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: JSON export (sent as an attachment)
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/me/delete:
+    post:
+      tags: [me]
+      operationId: deleteMyAccount
+      summary: Permanently delete your account and history (UK GDPR erasure)
+      description: Cancels any paid subscription first. Cannot be undone.
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: string, enum: [DELETE] }
+      responses:
+        '204': { description: Deleted; the session cookie is cleared }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/me/entitlement:
+    get:
+      tags: [billing]
+      operationId: getMyEntitlement
+      summary: Your plan, its retention window and the features it unlocks
+      security: [{ webSession: [] }, { modToken: [] }]
+      responses:
+        '200':
+          description: Entitlement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/billing/checkout:
+    post:
+      tags: [billing]
+      operationId: startCheckout
+      summary: Start a Stripe Checkout for Pro or Max
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier: { type: string, enum: [pro, max] }
+                interval: { type: string, enum: [month, year], default: month }
+                creator:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{2,24}$'
+                  description: Creator code (a paid partnership; the site labels it as an ad). Discount codes are typed on Stripe's page.
+      responses:
+        '200':
+          description: Redirect the browser here
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedirectUrl' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/billing/portal:
+    post:
+      tags: [billing]
+      operationId: openBillingPortal
+      summary: Stripe customer portal (cancel, change plan, invoices)
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Redirect the browser here
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedirectUrl' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/auth/discord/start:
+    get:
+      tags: [discord]
+      operationId: discordStart
+      summary: Browser navigation. Redirects to Discord (scope identify only)
+      description: mode=link needs a web session. Sets a short-lived HttpOnly ss_oauth cookie that the callback checks.
+      parameters:
+        - name: mode
+          in: query
+          schema: { type: string, enum: [login, link], default: login }
+      responses:
+        '302': { description: Redirect to Discord }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/auth/discord/callback:
+    get:
+      tags: [discord]
+      operationId: discordCallback
+      summary: Discord redirects here. Redirects to /me, /settings or /link with a ?discord= result
+      description: |
+        Results: linked, cancelled, alt_needs_plan (on /settings); not_linked, invalid, expired, cancelled (on /link).
+        A successful sign-in sets the ss_session cookie.
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        '302': { description: Redirect back to the site }
+
+  /v1/me/discord:
+    get:
+      tags: [discord]
+      operationId: getMyDiscord
+      summary: Whether Discord is linked to this account
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Discord link
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscordLink' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [discord]
+      operationId: unlinkMyDiscord
+      summary: Unlink Discord from this account
+      security: [{ webSession: [] }]
+      responses:
+        '204': { description: Unlinked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/me/accounts:
+    get:
+      tags: [discord]
+      operationId: getMyAccounts
+      summary: Minecraft accounts linked to the same Discord user
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: '#/components/schemas/LinkedAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/switch:
+    post:
+      tags: [discord]
+      operationId: switchAccount
+      summary: Switch this browser to another of your Minecraft accounts (same Discord user)
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uuid]
+              properties:
+                uuid: { type: string }
+      responses:
+        '200':
+          description: Switched; a new ss_session cookie is set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [switched]
+                properties:
+                  switched: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/sessions:
+    get:
+      tags: [me]
+      operationId: getMySessions
+      summary: Signed-in browsers and mods
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/sessions/{sessionId}:
+    delete:
+      tags: [me]
+      operationId: revokeSession
+      summary: Sign out one browser or mod
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Signed out }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/sessions/revoke-others:
+    post:
+      tags: [me]
+      operationId: revokeOtherSessions
+      summary: Sign out everywhere except this browser
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Signed out
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/bot/pairing:
+    post:
+      tags: [bot]
+      operationId: botStartPairing
+      summary: /link from Discord. Claiming the code in game also links this Discord user
+      security: [{ botKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                discordUsername: { type: [string, 'null'] }
+      responses:
+        '201':
+          description: Code to show
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BotPairing' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/bot/pairing/{pairingId}:
+    get:
+      tags: [bot]
+      operationId: botPairingStatus
+      summary: Has the player confirmed the code in game?
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: pairingId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BotPairingStatus' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/bot/whois/{discordId}:
+    get:
+      tags: [bot]
+      operationId: botWhois
+      summary: Minecraft accounts a Discord user chose to show publicly
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: discordId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      required: [uuid, username, profilePublic]
+                      properties:
+                        uuid: { type: string }
+                        username: { type: string }
+                        profilePublic: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/bot/role-sync:
+    get:
+      tags: [bot]
+      operationId: botRoleSync
+      summary: Who should get the linked / Pro / Max roles (opt-in only)
+      security: [{ botKey: [] }]
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      required: [discordId, linked, tier]
+                      properties:
+                        discordId: { type: string }
+                        linked: { type: boolean, description: Opted in to showing the Discord link }
+                        tier: { $ref: '#/components/schemas/Tier' }
+
+  /v1/me/notification-prefs:
+    get:
+      tags: [alerts]
+      operationId: getNotificationPrefs
+      summary: How and when you get notified (everything off by default)
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPrefs' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [alerts]
+      operationId: updateNotificationPrefs
+      summary: Change notification preferences
+      security: [{ webSession: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPrefsPatch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPrefs' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/me/alerts:
+    get:
+      tags: [alerts]
+      operationId: listAlerts
+      summary: Your bazaar alerts
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items: { $ref: '#/components/schemas/AlertRule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [alerts]
+      operationId: createAlert
+      summary: Create a price, unusual-move or manipulation alert (Pro and above)
+      security: [{ webSession: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewAlertRule' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/me/alerts/{id}:
+    delete:
+      tags: [alerts]
+      operationId: deleteAlert
+      summary: Delete an alert
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/goals:
+    get:
+      tags: [alerts]
+      operationId: listGoals
+      summary: Your coin goals
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Goals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [goals]
+                properties:
+                  goals:
+                    type: array
+                    items: { $ref: '#/components/schemas/Goal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [alerts]
+      operationId: createGoal
+      summary: Set a coin goal for a profile (free; the reached alert is Pro and above)
+      security: [{ webSession: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profileId, target]
+              properties:
+                profileId: { type: string }
+                target: { type: number, minimum: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Goal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/goals/{id}:
+    delete:
+      tags: [alerts]
+      operationId: deleteGoal
+      summary: Delete a goal
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/notifications:
+    get:
+      tags: [alerts]
+      operationId: listNotifications
+      summary: Your latest 50 notifications (kept 90 days)
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notifications]
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/notifications/read-all:
+    post:
+      tags: [alerts]
+      operationId: readAllNotifications
+      summary: Mark every notification as read
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '204': { description: Done }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/news:
+    get:
+      tags: [status]
+      operationId: listNews
+      summary: Latest SkyBlock patch notes
+      responses:
+        '200':
+          description: News
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [news]
+                properties:
+                  news:
+                    type: array
+                    items: { $ref: '#/components/schemas/NewsItem' }
+
+  /v1/election:
+    get:
+      tags: [status]
+      operationId: getElection
+      summary: Current SkyBlock mayor and the open election, if any
+      responses:
+        '200':
+          description: Election
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Election' }
+
+  /v1/bot/notifications/claim:
+    post:
+      tags: [bot]
+      operationId: botClaimNotifications
+      summary: Take due DMs to send (each is handed out once)
+      security: [{ botKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        '200':
+          description: DMs to send
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notifications]
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, kind, title, body, url, discordId]
+                      properties:
+                        id: { type: integer }
+                        kind: { type: string }
+                        title: { type: string }
+                        body: { type: string }
+                        url: { type: [string, 'null'] }
+                        discordId: { type: string }
+
+  /v1/bot/notifications/{id}/result:
+    post:
+      tags: [bot]
+      operationId: botNotificationResult
+      summary: Report whether a DM was delivered
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ok]
+              properties:
+                ok: { type: boolean }
+      responses:
+        '204': { description: Recorded }
+
+  /v1/bot/news/unannounced:
+    get:
+      tags: [bot]
+      operationId: botUnannouncedNews
+      summary: Patch notes not yet posted to Discord channels
+      security: [{ botKey: [] }]
+      responses:
+        '200':
+          description: News
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [news]
+                properties:
+                  news:
+                    type: array
+                    items: { $ref: '#/components/schemas/NewsItem' }
+
+  /v1/bot/news/announced:
+    post:
+      tags: [bot]
+      operationId: botMarkAnnounced
+      summary: Mark a patch note as posted
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        '204': { description: Recorded }
+
+  /v1/items:
+    get:
+      tags: [market]
+      operationId: searchItems
+      summary: Search SkyBlock items
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Item' } } } }
+  /v1/bazaar-insights/movers:
+    get:
+      tags: [market]
+      operationId: getMovers
+      summary: Biggest gainers and losers
+      parameters:
+        - { name: window, in: query, schema: { type: string, enum: ['1h', '24h', '7d'], default: '24h' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Movers' }
+  /v1/bazaar-insights/categories:
+    get:
+      tags: [market]
+      operationId: getCategories
+      summary: Bazaar sectors with their 24h change
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [categories], properties: { categories: { type: array, items: { type: object, required: [category, products, change24h], properties: { category: { type: string }, products: { type: integer }, change24h: { type: number } } } } } }
+  /v1/bazaar-insights/index:
+    get:
+      tags: [market]
+      operationId: getEconomyIndex
+      summary: SkyBlock economy index (top 50 traded items, rebased to 100)
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 365, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [days, points], properties: { days: { type: integer }, points: { type: array, items: { type: object, required: [t, value], properties: { t: { type: string, format: date-time }, value: { type: number } } } } } }
+  /v1/bazaar-insights/npc-arbitrage:
+    get:
+      tags: [market]
+      operationId: getNpcArbitrage
+      summary: Items you can instabuy for less than an NPC pays
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { type: object, additionalProperties: true } } } }
+  /v1/bazaar-insights/flips:
+    get:
+      tags: [market]
+      operationId: getFlips
+      summary: Flip finder (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [tax, flips], properties: { tax: { type: number }, flips: { type: array, items: { $ref: '#/components/schemas/Flip' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar-insights/anomalies:
+    get:
+      tags: [market]
+      operationId: getAnomalies
+      summary: Recent unusual moves (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [anomalies], properties: { anomalies: { type: array, items: { type: object, required: [productId, detectedAt, z, price], properties: { productId: { type: string }, detectedAt: { type: string, format: date-time }, z: { type: number }, price: { type: number } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar/{productId}/depth:
+    get:
+      tags: [market]
+      operationId: getDepth
+      summary: Order book depth (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, sellOffers, buyOrders], properties: { productId: { type: string }, sellOffers: { type: array, items: { $ref: '#/components/schemas/OrderLevel' } }, buyOrders: { type: array, items: { $ref: '#/components/schemas/OrderLevel' } }, updatedAt: { type: string, format: date-time } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar/{productId}/spread:
+    get:
+      tags: [market]
+      operationId: getSpread
+      summary: Spread over time (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 365, default: 7 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, points], properties: { productId: { type: string }, points: { type: array, items: { type: object, required: [t, spread, spreadPct], properties: { t: { type: string, format: date-time }, spread: { type: number }, spreadPct: { type: [number, 'null'] } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar/{productId}/seasonality:
+    get:
+      tags: [market]
+      operationId: getSeasonality
+      summary: Price by hour of day and weekday, vs. the 30-day mean (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, byHour, byWeekday], properties: { productId: { type: string }, byHour: { type: array, items: { type: [number, 'null'] } }, byWeekday: { type: array, items: { type: [number, 'null'] } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar/{productId}/correlations:
+    get:
+      tags: [market]
+      operationId: getCorrelations
+      summary: Items that move together (Max)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, related], properties: { productId: { type: string }, related: { type: array, items: { type: object, required: [otherId, r], properties: { otherId: { type: string }, r: { type: number } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/bazaar/{productId}/craft:
+    get:
+      tags: [market]
+      operationId: getCraft
+      summary: 'Craft or buy: cheapest way to make an item (Pro)'
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CraftPlan' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/auctions/{productId}:
+    get:
+      tags: [market]
+      operationId: getAuctionPrices
+      summary: Lowest BIN and hourly sale medians
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 30, default: 7 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuctionPrices' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/election/history:
+    get:
+      tags: [status]
+      operationId: getElectionHistory
+      summary: Past mayors (for chart overlays)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [mayors], properties: { mayors: { type: array, items: { type: object, required: [year, mayor], properties: { year: { type: integer }, mayor: { type: [string, 'null'] }, perks: { type: array, items: { type: object, additionalProperties: true } } } } } } }
+  /v1/embed/bazaar/{file}:
+    get:
+      tags: [market]
+      operationId: embedChart
+      summary: Embeddable SVG price chart, e.g. ENCHANTED_DIAMOND.svg
+      parameters:
+        - { name: file, in: path, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+      responses:
+        '200':
+          description: SVG image
+          content:
+            image/svg+xml:
+              schema: { type: string }
+  /v1/me/watchlist:
+    get:
+      tags: [market]
+      operationId: getWatchlist
+      summary: Items you watch (up to 50)
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { type: object, required: [productId], properties: { productId: { type: string }, createdAt: { type: string, format: date-time } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/watchlist/{productId}:
+    put:
+      tags: [market]
+      operationId: watchItem
+      summary: Watch an item
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '204': { description: Watching }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [market]
+      operationId: unwatchItem
+      summary: Stop watching an item
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '204': { description: Removed }
+
+  /v1/methods:
+    get:
+      tags: [methods]
+      operationId: listMethods
+      summary: Every method with its live value (locked ones show no value)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [tier, methods], properties: { tier: { $ref: '#/components/schemas/Tier' }, methods: { type: array, items: { $ref: '#/components/schemas/MethodSummary' } } } }
+
+  /v1/methods/{id}:
+    get:
+      tags: [methods]
+      operationId: getMethod
+      summary: A method's live breakdown
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MethodDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/methods/{id}/history:
+    get:
+      tags: [methods]
+      operationId: getMethodHistory
+      summary: A method's hourly value over time (Pro)
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 365, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [id, points], properties: { id: { type: string }, points: { type: array, items: { type: object, required: [hour, value], properties: { hour: { type: string, format: date-time }, value: { type: number } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/methods/{id}/vote:
+    put:
+      tags: [methods]
+      operationId: voteMethod
+      summary: Rate a method (votes only, no comments)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vote]
+              properties:
+                vote: { type: integer, enum: [1, -1] }
+                stillWorks: { type: boolean }
+                difficulty: { type: integer, minimum: 1, maximum: 5 }
+      responses:
+        '204': { description: Saved }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/me/methods:
+    post:
+      tags: [methods]
+      operationId: createCustomMethod
+      summary: Create a private custom method (Max)
+      security: [{ webSession: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomMethodInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/me/methods/{id}:
+    put:
+      tags: [methods]
+      operationId: updateCustomMethod
+      summary: Update a custom method (Max)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomMethodInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [methods]
+      operationId: deleteCustomMethod
+      summary: Delete a custom method
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/play-sessions:
+    get:
+      tags: [insight]
+      operationId: listPlaySessions
+      summary: Your play sessions from mod heartbeats
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, default: 7 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [sessions], properties: { sessions: { type: array, items: { $ref: '#/components/schemas/PlaySession' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/play-sessions/{id}:
+    patch:
+      tags: [insight]
+      operationId: tagPlaySession
+      summary: Tag a session with the method you were doing (or null)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [methodId]
+              properties:
+                methodId: { type: [string, 'null'] }
+      responses:
+        '204': { description: Saved }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/me/money/days:
+    get:
+      tags: [insight]
+      operationId: getMoneyDays
+      summary: Daily totals, best and worst days, milestones
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MoneyDays' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/money/breakdown:
+    get:
+      tags: [insight]
+      operationId: getMoneyBreakdown
+      summary: Income vs spending per day, transfers left out (Pro)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [days], properties: { days: { type: array, items: { type: object, required: [day, income, spending, transfers], properties: { day: { type: string }, income: { type: number }, spending: { type: number }, transfers: { type: integer } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/me/money/compare:
+    get:
+      tags: [insight]
+      operationId: compareMoneyPeriods
+      summary: This period vs the one before (Pro)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [days, current, previous], properties: { days: { type: integer }, current: { type: array, items: { $ref: '#/components/schemas/PeriodPoint' } }, previous: { type: array, items: { $ref: '#/components/schemas/PeriodPoint' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/me/money.csv:
+    get:
+      tags: [insight]
+      operationId: exportMoneyCsv
+      summary: Your money history as CSV (Pro; the JSON data export is free)
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/me/drops:
+    get:
+      tags: [insight]
+      operationId: listDrops
+      summary: Rare drops the mod saw
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, default: 7 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [events], properties: { events: { type: array, items: { type: object, required: [at, type, itemName], properties: { at: { type: string, format: date-time }, type: { type: string }, itemId: { type: [string, 'null'] }, itemName: { type: [string, 'null'] }, qty: { type: [integer, 'null'] } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/annotations:
+    get:
+      tags: [insight]
+      operationId: listAnnotations
+      summary: Your chart notes for a profile
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: profileId, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [annotations], properties: { annotations: { type: array, items: { $ref: '#/components/schemas/Annotation' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [insight]
+      operationId: addAnnotation
+      summary: Add a private chart note (Pro)
+      security: [{ webSession: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profileId, at, text]
+              properties:
+                profileId: { type: string }
+                at: { type: string, format: date-time }
+                text: { type: string, maxLength: 120 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/me/annotations/{id}:
+    delete:
+      tags: [insight]
+      operationId: deleteAnnotation
+      summary: Delete a chart note
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/me/methods-performance/{id}:
+    get:
+      tags: [insight]
+      operationId: getMethodPerformance
+      summary: Your coins/hour on sessions tagged with a method vs. its value (Pro)
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [methodId, sessions, yourCoinsPerHour, expectedPerHour], properties: { methodId: { type: string }, sessions: { type: integer }, yourCoinsPerHour: { type: [number, 'null'] }, expectedPerHour: { type: [number, 'null'] } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/me/coop/{profileId}:
+    get:
+      tags: [insight]
+      operationId: getCoop
+      summary: 'Co-op view: contributions, shared-bank ledger and activity (only what members share)'
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, default: 7 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoopView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mod/events:
+    post:
+      tags: [mod]
+      operationId: modEvents
+      summary: Rare drops seen in the player's own chat (ignored while tracking is off)
+      security: [{ modToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                profileId: { type: [string, 'null'] }
+                events:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [type, at, itemName]
+                    properties:
+                      type: { type: string, enum: [rare_drop] }
+                      at: { type: integer, description: Unix ms }
+                      itemName: { type: string, maxLength: 80 }
+                      itemId: { type: string }
+                      qty: { type: integer, minimum: 1 }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted]
+                properties:
+                  accepted: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/leaderboards:
+    get:
+      tags: [social]
+      operationId: getLeaderboard
+      summary: 'Leaderboards of players who opted in'
+      security: [{}, { webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: board, in: query, schema: { type: string, enum: [gain, consistency, coop], default: gain } }
+        - { name: period, in: query, schema: { type: string, enum: ['7d', '30d'], default: '7d' } }
+        - { name: scope, in: query, schema: { type: string, default: global, description: 'global or mode:<gameMode>' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Leaderboard' }
+  /v1/me/follows:
+    get:
+      tags: [social]
+      operationId: listFollows
+      summary: 'Public profiles you follow'
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [following], properties: { following: { type: array, items: { type: object, required: [uuid, username], properties: { uuid: { type: string }, username: { type: [string, 'null'] }, since: { type: string, format: date-time } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/follows/{name}:
+    put:
+      tags: [social]
+      operationId: followPlayer
+      summary: 'Follow a public profile'
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: OK
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [social]
+      operationId: unfollowPlayer
+      summary: 'Stop following'
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: OK
+  /v1/me/feed:
+    get:
+      tags: [social]
+      operationId: getFeed
+      summary: 'Achievements from players you follow (last 30 days)'
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { type: object, required: [uuid, username, achievement, name, earnedAt], properties: { uuid: { type: string }, username: { type: [string, 'null'] }, achievement: { type: string }, name: { type: string }, earnedAt: { type: string, format: date-time } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/achievements:
+    get:
+      tags: [social]
+      operationId: getAchievements
+      summary: 'Every achievement and whether you have it'
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [achievements], properties: { achievements: { type: array, items: { $ref: '#/components/schemas/Achievement' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/wrapped:
+    get:
+      tags: [social]
+      operationId: getWrapped
+      summary: 'Your year or month in SkyBlock'
+      security: [{ webSession: [] }, { botKey: [] }]
+      parameters:
+        - { name: period, in: query, schema: { type: string, examples: ['2026', '2026-11'] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Wrapped' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/me/profile-look:
+    get:
+      tags: [social]
+      operationId: getProfileLook
+      summary: 'Your public profile theme and custom link'
+      security: [{ webSession: [] }, { botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileLook' }
+    patch:
+      tags: [social]
+      operationId: setProfileLook
+      summary: 'Set a theme (Pro) or custom link (Max)'
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { profileTheme: { type: [string, 'null'], enum: [gold, emerald, sapphire, amethyst, ruby, obsidian, null] }, vanity: { type: [string, 'null'], maxLength: 24 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileLook' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/og/player/{file}:
+    get:
+      tags: [social]
+      operationId: ogPlayer
+      summary: 1200x630 share image for a public profile
+      parameters:
+        - { name: file, in: path, required: true, schema: { type: string, examples: [Notch.png] } }
+      responses:
+        '200':
+          description: PNG
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+  /v1/og/bazaar/{file}:
+    get:
+      tags: [social]
+      operationId: ogBazaar
+      summary: 1200x630 share image for a bazaar item
+      parameters:
+        - { name: file, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: PNG
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+  /v1/bot/leaderboard:
+    post:
+      tags: [bot]
+      operationId: botServerLeaderboard
+      summary: 'A Discord server board from members who opted in'
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [discordIds], properties: { discordIds: { type: array, items: { type: string } }, board: { type: string, enum: [gain, consistency] }, period: { type: string, enum: ['7d', '30d'] } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [entries], properties: { entries: { type: array, items: { type: object, required: [rank, label, value], properties: { rank: { type: integer }, label: { type: string }, value: { type: number } } } } } }
+  /v1/bot/competitions:
+    post:
+      tags: [bot]
+      operationId: botCreateCompetition
+      summary: 'Start a grinding competition (no prizes)'
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [guildId, name, hours], properties: { guildId: { type: string }, name: { type: string }, hours: { type: integer, minimum: 1, maximum: 336 } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Competition' }
+    get:
+      tags: [bot]
+      operationId: botListCompetitions
+      summary: 'Recent competitions in a server'
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: guildId, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [competitions], properties: { competitions: { type: array, items: { $ref: '#/components/schemas/Competition' } } } }
+  /v1/bot/competitions/{id}:
+    get:
+      tags: [bot]
+      operationId: botCompetitionStandings
+      summary: 'Standings'
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [competition, standings], properties: { competition: { $ref: '#/components/schemas/Competition' }, standings: { type: array, items: { type: object, required: [username, uuid, gain], properties: { username: { type: [string, 'null'] }, uuid: { type: string }, gain: { type: number } } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/bot/competitions/{id}/join:
+    post:
+      tags: [bot]
+      operationId: botJoinCompetition
+      summary: 'Join (shows your name and gain in that server)'
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204':
+          description: OK
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/bot/games/{game}/today:
+    get:
+      tags: [bot]
+      operationId: botGameToday
+      summary: "Today's round"
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: game, in: path, required: true, schema: { type: string, enum: [guess, predict] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GameRound' }
+  /v1/bot/games/guess:
+    post:
+      tags: [bot]
+      operationId: botPlayGuess
+      summary: 'Guess the price (once a day; no prizes)'
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [guess], properties: { guess: { type: number } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, actual, points], properties: { productId: { type: string }, actual: { type: number }, points: { type: integer } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/bot/games/predict:
+    post:
+      tags: [bot]
+      operationId: botPlayPredict
+      summary: 'Predict up or down by tomorrow (once a day; no prizes)'
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [direction], properties: { direction: { type: integer, enum: [1, -1] } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [productId, startPrice, resolvesAt], properties: { productId: { type: string }, startPrice: { type: number }, resolvesAt: { type: string, format: date-time } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/bot/games/{game}/leaderboard:
+    get:
+      tags: [bot]
+      operationId: botGameLeaderboard
+      summary: 'Points over 30 days'
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: game, in: path, required: true, schema: { type: string, enum: [guess, predict] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [entries], properties: { entries: { type: array, items: { type: object, required: [discordId, points, plays], properties: { discordId: { type: string }, points: { type: integer }, plays: { type: integer } } } } } }
+  /v1/bot/games/rich-or-not:
+    get:
+      tags: [bot]
+      operationId: botRichOrNot
+      summary: 'Two players who show their coins publicly'
+      security: [{ botKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [a, b], properties: { a: { $ref: '#/components/schemas/RichCandidate' }, b: { $ref: '#/components/schemas/RichCandidate' } } }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/me/api-keys:
+    get:
+      tags: [platform]
+      operationId: listApiKeys
+      summary: Your public API keys (Max). Only the prefix is shown.
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [platform]
+      operationId: createApiKey
+      summary: Create a read-only API key (Max, up to 5). The full key is returned once.
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 40 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/ApiKey' }
+                  - type: object
+                    required: [key]
+                    properties:
+                      key: { type: string, description: 'Send as x-api-key. Not shown again.' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/me/api-keys/{id}:
+    delete:
+      tags: [platform]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/me/webhooks:
+    get:
+      tags: [platform]
+      operationId: listWebhooks
+      summary: Your alert webhooks (Max)
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: Webhooks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks]
+                properties:
+                  webhooks:
+                    type: array
+                    items: { $ref: '#/components/schemas/Webhook' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [platform]
+      operationId: createWebhook
+      summary: Add an https webhook for your alerts (Max, up to 3). The signing secret is returned once.
+      description: |
+        Each delivery is a JSON POST with a `skystats-signature` header of the form `t=<unix>,v1=<hex>`,
+        where v1 is HMAC-SHA256 of `<t>.<body>` with your secret. Reject old timestamps to stop replays.
+        URLs must be https on a public host. A webhook switches off after 20 failed deliveries in a row.
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 500 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Webhook' }
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/me/webhooks/{id}:
+    delete:
+      tags: [platform]
+      operationId: deleteWebhook
+      summary: Remove a webhook
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/me/webhooks/{id}/test:
+    post:
+      tags: [platform]
+      operationId: testWebhook
+      summary: Send a test event to a webhook
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '202': { description: Queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/me/sessions/rotate:
+    post:
+      tags: [me]
+      operationId: rotateSession
+      summary: Swap the web session cookie for a fresh one (the site does this daily)
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: New cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiresAt]
+                properties:
+                  expiresAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/flags:
+    get:
+      tags: [platform]
+      operationId: getFlags
+      summary: Which feature flags are on for you (signed out works too)
+      security: [{}, { webSession: [] }, { apiKey: [] }]
+      responses:
+        '200':
+          description: Flags
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [flags]
+                properties:
+                  flags:
+                    type: object
+                    additionalProperties: { type: boolean }
+  /v1/billing/gift:
+    post:
+      tags: [billing]
+      operationId: giftCheckout
+      summary: Buy one month of Pro or Max as a gift. The code arrives in your SkyStats inbox.
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier: { type: string, enum: [pro, max] }
+      responses:
+        '200':
+          description: Stripe Checkout URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: string, format: uri }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/billing/redeem:
+    post:
+      tags: [billing]
+      operationId: redeemGift
+      summary: Redeem a gift code
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, examples: [ABCD-EFGH-JKLM-NPQR] }
+      responses:
+        '200':
+          description: Your plan now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/bazaar/stream:
+    get:
+      tags: [bazaar]
+      operationId: streamBazaar
+      summary: Live bazaar prices (Server-Sent Events, free)
+      description: Sends a `prices` event with the products whose buy or sell price changed since the last tick.
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/batch:
+    post:
+      tags: [platform]
+      operationId: batch
+      summary: Up to 20 read-only GETs in one request (bazaar, items, players, status, election, your own data)
+      security: [{}, { webSession: [] }, { apiKey: [] }, { botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requests]
+              properties:
+                requests:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [path]
+                    properties:
+                      path: { type: string, maxLength: 200, examples: [/v1/bazaar/ENCHANTED_DIAMOND] }
+      responses:
+        '200':
+          description: One result per request, in order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, status, body]
+                      properties:
+                        path: { type: string }
+                        status: { type: integer }
+                        body: {}
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/api/status:
+    get:
+      tags: [platform]
+      operationId: getApiStatus
+      summary: API health for developers, with upstream Hypixel status
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api, version, upstream, docs]
+                properties:
+                  api: { type: string, enum: [ok] }
+                  version: { type: [string, 'null'] }
+                  upstream: { $ref: '#/components/schemas/HypixelStatus' }
+                  docs: { type: string, format: uri }
+
+  /v1/bot/guilds/{guildId}/settings:
+    parameters:
+      - { name: guildId, in: path, required: true, schema: { type: string, pattern: '^\d{17,20}$' } }
+    get:
+      tags: [bot]
+      operationId: botGuildSettings
+      summary: A Discord server's bot settings (internal)
+      security: [{ botKey: [] }]
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuildSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [bot]
+      operationId: botUpdateGuildSettings
+      summary: Change a Discord server's bot settings (internal; the bot checks Manage Server first)
+      security: [{ botKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                statusChannelId: { type: [string, 'null'] }
+                newsChannelId: { type: [string, 'null'] }
+                boardChannelId: { type: [string, 'null'] }
+                bazaarChannelId: { type: [string, 'null'] }
+                verifiedRoleId: { type: [string, 'null'] }
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuildSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [bot]
+      operationId: botDeleteGuildSettings
+      summary: Forget a server's settings (the bot was removed)
+      security: [{ botKey: [] }]
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/bot/guild-channels:
+    get:
+      tags: [bot]
+      operationId: botGuildChannels
+      summary: Channels that asked for a kind of post (internal)
+      security: [{ botKey: [] }]
+      parameters:
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [status, news, board, bazaar] } }
+      responses:
+        '200':
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      required: [guildId, channelId]
+                      properties:
+                        guildId: { type: string }
+                        channelId: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    modToken:
+      type: http
+      scheme: bearer
+      description: Token from /v1/auth/mod/verify (prefix ssm_)
+    webSession:
+      type: apiKey
+      in: cookie
+      name: ss_session
+      description: HttpOnly cookie set by /v1/pairing/{pairingId}/poll, Discord sign-in or account switching
+    botKey:
+      type: apiKey
+      in: header
+      name: x-bot-key
+      description: Internal only. Sent with x-discord-user-id; the request acts as that Discord user's linked account.
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Public API key (Max, prefix ssk_). Read-only GETs on your own data and public data, plus /v1/batch. Has its own rate limit.
+
+  parameters:
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: Bazaar product id, e.g. ENCHANTED_DIAMOND (case-insensitive)
+      schema: { type: string, pattern: '^[A-Za-z0-9_:\-]{1,64}$' }
+
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing, invalid or expired credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Gone:
+      description: Expired
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Not possible in the current state (see `error`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Your plan doesn't include this (`upgrade_required`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: A dependency (billing, Hypixel) is unavailable; try again later
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: Machine-readable code }
+        message: { type: string }
+
+    BazaarProduct:
+      type: object
+      required: [id, name, buyPrice, sellPrice, margin, buyVolume, sellVolume,
+                 buyMovingWeek, sellMovingWeek, buyOrders, sellOrders, updatedAt]
+      properties:
+        id: { type: string, examples: [ENCHANTED_DIAMOND] }
+        name: { type: string, examples: [Enchanted Diamond] }
+        buyPrice: { type: number, description: Price to instabuy }
+        sellPrice: { type: number, description: Price received when instaselling }
+        margin: { type: number, description: buyPrice - sellPrice }
+        buyVolume: { type: integer }
+        sellVolume: { type: integer }
+        buyMovingWeek: { type: integer, description: Items instabought over the last 7 days }
+        sellMovingWeek: { type: integer, description: Items instasold over the last 7 days }
+        buyOrders: { type: integer }
+        sellOrders: { type: integer }
+        updatedAt: { type: string, format: date-time }
+
+    BazaarSnapshot:
+      type: object
+      required: [takenAt, buyPrice, sellPrice, buyVolume, sellVolume, buyMovingWeek, sellMovingWeek]
+      properties:
+        takenAt: { type: string, format: date-time }
+        buyPrice: { type: number }
+        sellPrice: { type: number }
+        buyVolume: { type: integer }
+        sellVolume: { type: integer }
+        buyMovingWeek: { type: integer }
+        sellMovingWeek: { type: integer }
+
+    HypixelStatus:
+      type: object
+      required: [indicator, description, components, incidents, checkedAt]
+      properties:
+        indicator:
+          type: string
+          enum: [none, minor, major, critical, unknown]
+        description: { type: string }
+        components:
+          type: array
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name: { type: string }
+              status: { type: string, examples: [operational, degraded_performance, major_outage] }
+        incidents:
+          type: array
+          items:
+            type: object
+            required: [name, status, impact, url]
+            properties:
+              name: { type: string }
+              status: { type: string }
+              impact: { type: [string, 'null'] }
+              url: { type: [string, 'null'] }
+        checkedAt: { type: [string, 'null'], format: date-time }
+
+    Account:
+      type: object
+      required: [uuid, username, trackingEnabled, modLastSeenAt, modVersion, createdAt]
+      properties:
+        uuid: { type: string, description: Minecraft UUID without dashes, examples: [069a79f444e94726a5befca90e38aaf5] }
+        username: { type: string, examples: [Notch] }
+        trackingEnabled: { type: boolean }
+        modLastSeenAt: { type: [string, 'null'], format: date-time }
+        modVersion: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+
+    ModChallenge:
+      type: object
+      required: [serverId, expiresAt]
+      properties:
+        serverId: { type: string, description: Pass to Mojang joinServer }
+        expiresAt: { type: string, format: date-time }
+
+    ModSession:
+      type: object
+      required: [token, expiresAt, account]
+      properties:
+        token: { type: string, description: 'Bearer token, prefix ssm_' }
+        expiresAt: { type: string, format: date-time }
+        account: { $ref: '#/components/schemas/Account' }
+
+    Pairing:
+      type: object
+      required: [id, code, command, secret, expiresAt, pollIntervalSeconds]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, examples: [ABCD-EFGH] }
+        command: { type: string, examples: ['/skystats link ABCD-EFGH'] }
+        secret: { type: string, description: Keep in the browser; needed to poll }
+        expiresAt: { type: string, format: date-time }
+        pollIntervalSeconds: { type: integer }
+
+    PairingStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, linked, expired]
+        account: { $ref: '#/components/schemas/Account' }
+
+    ProfileMember:
+      type: object
+      required: [uuid, username, isYou, onSkyStats, usesMod, trackingEnabled, firstJoin, purse, personalBank, skyblockLevel]
+      properties:
+        uuid: { type: string }
+        username: { type: [string, 'null'], description: null until the name lookup finishes }
+        isYou: { type: boolean }
+        onSkyStats: { type: boolean, description: Has a SkyStats account }
+        usesMod: { type: boolean, description: SkyStats mod seen in the last 30 days }
+        trackingEnabled:
+          type: [boolean, 'null']
+          description: null when the member isn't on SkyStats
+        firstJoin: { type: [string, 'null'], format: date-time }
+        purse: { type: [number, 'null'] }
+        personalBank: { type: [number, 'null'] }
+        skyblockLevel: { type: [integer, 'null'] }
+
+    Profile:
+      type: object
+      required: [id, name, gameMode, selected, coop, bank, members, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: [string, 'null'], examples: [Strawberry] }
+        gameMode:
+          type: string
+          description: normal, ironman, island (stranded), bingo, ...
+        selected: { type: boolean, description: Your currently selected profile }
+        coop: { type: boolean, description: More than one active member }
+        bank: { type: [number, 'null'], description: Shared bank balance (null if the API setting is off) }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/ProfileMember' }
+        updatedAt: { type: string, format: date-time }
+
+    MyProfiles:
+      type: object
+      required: [profiles, lastFetchedAt]
+      properties:
+        lastFetchedAt: { type: [string, 'null'], format: date-time, description: null if never fetched yet }
+        profiles:
+          type: array
+          items: { $ref: '#/components/schemas/Profile' }
+
+    ModSnapshot:
+      type: object
+      required: [profileId, purse]
+      additionalProperties: false
+      properties:
+        profileId: { type: string, description: Hypixel profile id (dashes optional) }
+        purse: { type: number, minimum: 0 }
+        personalBank: { type: [number, 'null'], minimum: 0 }
+        profileBank: { type: [number, 'null'], minimum: 0, description: Shared co-op bank }
+        skyblockXp: { type: [number, 'null'], minimum: 0 }
+        inventory:
+          type: array
+          maxItems: 300
+          description: Item ids and counts from your own inventory. Only the total value is stored.
+          items:
+            type: object
+            required: [id, count]
+            properties:
+              id: { type: string }
+              count: { type: integer, minimum: 1 }
+
+    SnapshotResult:
+      type: object
+      required: [stored]
+      properties:
+        stored: { type: boolean }
+        reason: { type: string, enum: [too_soon, unknown_profile] }
+
+    MoneyPoint:
+      type: object
+      required: [t, total]
+      properties:
+        t: { type: string, description: ISO time (raw) or YYYY-MM-DD (daily) }
+        total: { type: [number, 'null'], description: Purse + personal bank + shared bank (daily = closing value) }
+        purse: { type: [number, 'null'] }
+        personalBank: { type: [number, 'null'] }
+        profileBank: { type: [number, 'null'] }
+        open: { type: [number, 'null'] }
+        min: { type: [number, 'null'] }
+        max: { type: [number, 'null'] }
+
+    MoneyHistory:
+      type: object
+      required: [tier, range, from, retentionDays, clippedByTier, resolution, points]
+      properties:
+        tier: { $ref: '#/components/schemas/Tier' }
+        range: { type: string }
+        from: { type: [string, 'null'], format: date-time }
+        retentionDays: { type: [integer, 'null'], description: null = unlimited }
+        clippedByTier: { type: boolean, description: The range asked for goes further back than your plan keeps }
+        resolution: { type: string, enum: [raw, daily] }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/MoneyPoint' }
+
+    PrivacySettings:
+      type: object
+      required: [trackingEnabled, profilePublic, showOnLeaderboards, allowActivityPings, hideBank, discordPublic, showTierRole, activityInsights]
+      properties:
+        trackingEnabled: { type: boolean, description: Record money history from the mod }
+        profilePublic: { type: boolean, default: false, description: Anyone can see your summary at /p/<name> and via the bot }
+        showOnLeaderboards: { type: boolean, default: false }
+        allowActivityPings: { type: boolean, default: false, description: Co-op members may get alerts when you start playing }
+        hideBank: { type: boolean, default: true, description: Hide your purse and bank from co-op members on SkyStats }
+        discordPublic: { type: boolean, default: false, description: 'Others can see your Minecraft name via /whois and you get the linked role' }
+        showTierRole: { type: boolean, default: false, description: Show a Pro or Max role in the SkyStats Discord server }
+        activityInsights: { type: boolean, default: false, description: 'Label your sessions by activity (farming, mining) from what the mod sees' }
+
+    PrivacySettingsPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        trackingEnabled: { type: boolean }
+        profilePublic: { type: boolean }
+        showOnLeaderboards: { type: boolean }
+        allowActivityPings: { type: boolean }
+        hideBank: { type: boolean }
+        discordPublic: { type: boolean }
+        showTierRole: { type: boolean }
+        activityInsights: { type: boolean }
+
+    Tier:
+      type: string
+      enum: [free, pro, max]
+
+    Entitlement:
+      type: object
+      required: [tier, status, currentPeriodEnd, cancelAtPeriodEnd, graceUntil, retentionDays, features]
+      properties:
+        tier: { $ref: '#/components/schemas/Tier' }
+        status: { type: string, description: 'none, trialing, active, past_due, canceled' }
+        currentPeriodEnd: { type: [string, 'null'], format: date-time }
+        cancelAtPeriodEnd: { type: boolean }
+        graceUntil: { type: [string, 'null'], format: date-time, description: Paid features stay on until here after a failed payment }
+        retentionDays: { type: [integer, 'null'] }
+        features:
+          type: array
+          items: { type: string, examples: [alerts.price] }
+
+    RedirectUrl:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+
+    PublicPlayer:
+      type: object
+      required: [uuid, username, usesMod, theme, vanity, badges, profiles]
+      properties:
+        uuid: { type: string }
+        username: { type: string }
+        usesMod: { type: boolean }
+        theme: { type: [string, 'null'] }
+        vanity: { type: [string, 'null'] }
+        badges:
+          type: array
+          items:
+            type: object
+            required: [key, name]
+            properties:
+              key: { type: string }
+              name: { type: string }
+        profiles:
+          type: array
+          items:
+            type: object
+            required: [id, name, gameMode, selected, skyblockLevel, total, week]
+            properties:
+              id: { type: string }
+              name: { type: [string, 'null'] }
+              gameMode: { type: string }
+              selected: { type: boolean }
+              skyblockLevel: { type: [integer, 'null'] }
+              total: { type: [number, 'null'], description: Latest mod-reported coins; null when the player hides their bank }
+              week:
+                type: array
+                description: Daily closing totals for the last 7 days (empty when hidden)
+                items:
+                  type: object
+                  required: [day, total]
+                  properties:
+                    day: { type: string }
+                    total: { type: [number, 'null'] }
+
+    DiscordLink:
+      type: object
+      required: [enabled, linked, discordUsername, linkedAt]
+      properties:
+        enabled: { type: boolean, description: Discord login is set up on this server }
+        linked: { type: boolean }
+        discordUsername: { type: [string, 'null'] }
+        linkedAt: { type: [string, 'null'], format: date-time }
+
+    LinkedAccount:
+      type: object
+      required: [uuid, username, current]
+      properties:
+        uuid: { type: string }
+        username: { type: [string, 'null'] }
+        current: { type: boolean }
+
+    SessionInfo:
+      type: object
+      required: [id, kind, userAgent, createdAt, lastUsedAt, expiresAt, current]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [web, mod] }
+        userAgent: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, 'null'], format: date-time }
+        expiresAt: { type: string, format: date-time }
+        current: { type: boolean }
+
+    BotPairing:
+      type: object
+      required: [id, code, command, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        command: { type: string }
+        expiresAt: { type: string, format: date-time }
+
+    BotPairingStatus:
+      type: object
+      required: [status, username, discordLinked]
+      properties:
+        status: { type: string, enum: [pending, linked, expired] }
+        username: { type: [string, 'null'] }
+        discordLinked: { type: boolean, description: false when this would be a second account on a free plan }
+
+    NotificationPrefs:
+      type: object
+      required: [discordDm, quietStartMin, quietEndMin, timeZone, dailyDigest, weeklyRecap, coopActivity, mayorReminder, patchNotes, outages]
+      properties:
+        discordDm: { type: boolean, description: Send notifications as Discord DMs (needs Discord linked) }
+        quietStartMin: { type: [integer, 'null'], description: Minutes after local midnight; Pro and above }
+        quietEndMin: { type: [integer, 'null'] }
+        timeZone: { type: string, examples: [Europe/London] }
+        dailyDigest: { type: boolean, description: Pro and above }
+        weeklyRecap: { type: boolean, description: Pro and above }
+        coopActivity: { type: boolean, description: Pro and above; only for members who allow it }
+        mayorReminder: { type: boolean, description: Pro and above }
+        patchNotes: { type: boolean, description: Free }
+        outages: { type: boolean, description: Free }
+
+    NotificationPrefsPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        discordDm: { type: boolean }
+        quietStartMin: { type: [integer, 'null'], minimum: 0, maximum: 1439 }
+        quietEndMin: { type: [integer, 'null'], minimum: 0, maximum: 1439 }
+        timeZone: { type: string }
+        dailyDigest: { type: boolean }
+        weeklyRecap: { type: boolean }
+        coopActivity: { type: boolean }
+        mayorReminder: { type: boolean }
+        patchNotes: { type: boolean }
+        outages: { type: boolean }
+
+    NewAlertRule:
+      type: object
+      required: [kind, productId]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [price, anomaly, manipulation] }
+        productId: { type: string, examples: [ENCHANTED_DIAMOND] }
+        side: { type: string, enum: [buy, sell], default: buy }
+        op: { type: string, enum: [above, below], description: Price alerts only }
+        threshold: { type: number, description: 'Coins for price alerts; z-score for unusual moves (default 4)' }
+        cooldownMinutes: { type: integer, minimum: 5, maximum: 10080, default: 60 }
+
+    AlertRule:
+      type: object
+      required: [id, kind, productId, side, op, threshold, cooldownMinutes, active, lastFiredAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [price, anomaly, manipulation] }
+        productId: { type: string }
+        side: { type: string, enum: [buy, sell] }
+        op: { type: [string, 'null'] }
+        threshold: { type: [number, 'null'] }
+        cooldownMinutes: { type: integer }
+        active: { type: boolean }
+        lastFiredAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    Goal:
+      type: object
+      required: [id, profileId, target, createdAt, reachedAt]
+      properties:
+        id: { type: string, format: uuid }
+        profileId: { type: string }
+        target: { type: number }
+        createdAt: { type: string, format: date-time }
+        reachedAt: { type: [string, 'null'], format: date-time }
+        perDay: { type: [number, 'null'], description: 'Average change per day over the last 14 days' }
+        eta: { type: [string, 'null'], format: date-time, description: 'Estimate at the recent pace; null when not growing' }
+
+    GuildSettings:
+      type: object
+      required: [guildId, statusChannelId, newsChannelId, boardChannelId, bazaarChannelId, verifiedRoleId]
+      properties:
+        guildId: { type: string }
+        statusChannelId: { type: [string, 'null'] }
+        newsChannelId: { type: [string, 'null'] }
+        boardChannelId: { type: [string, 'null'] }
+        bazaarChannelId: { type: [string, 'null'] }
+        verifiedRoleId: { type: [string, 'null'] }
+
+    ApiKey:
+      type: object
+      required: [id, name, prefix, createdAt, lastUsedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, 'null'], format: date-time }
+
+    Webhook:
+      type: object
+      required: [id, url, active, failures, lastStatus, lastDeliveryAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        active: { type: boolean }
+        failures: { type: integer }
+        lastStatus: { type: [integer, 'null'] }
+        lastDeliveryAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      required: [id, kind, title, body, url, createdAt, readAt]
+      properties:
+        id: { type: integer }
+        kind: { type: string, examples: [price, anomaly, manipulation, goal, coop, digest, recap, mayor, patch, outage] }
+        title: { type: string }
+        body: { type: string }
+        url: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: [string, 'null'], format: date-time }
+
+    NewsItem:
+      type: object
+      required: [id, title, publishedAt]
+      properties:
+        id: { type: string, description: Link to the post }
+        title: { type: string }
+        publishedAt: { type: [string, 'null'], format: date-time }
+
+    Election:
+      type: object
+      required: [mayor, perks, candidates, open, year, checkedAt]
+      properties:
+        mayor: { type: [string, 'null'] }
+        perks:
+          type: array
+          items: { type: object, additionalProperties: true }
+        candidates:
+          type: array
+          items: { type: object, additionalProperties: true }
+        open: { type: boolean }
+        year: { type: [integer, 'null'] }
+        checkedAt: { type: [string, 'null'], format: date-time }
+
+    Item:
+      type: object
+      required: [id, name, category, tier, npcSellPrice]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: [string, 'null'] }
+        tier: { type: [string, 'null'] }
+        npcSellPrice: { type: [number, 'null'] }
+
+    Mover:
+      type: object
+      required: [productId, now, then, change]
+      properties:
+        productId: { type: string }
+        now: { type: number }
+        then: { type: number }
+        change: { type: number, description: '0.1 means +10%' }
+
+    Movers:
+      type: object
+      required: [window, gainers, losers]
+      properties:
+        window: { type: string }
+        gainers: { type: array, items: { $ref: '#/components/schemas/Mover' } }
+        losers: { type: array, items: { $ref: '#/components/schemas/Mover' } }
+
+    OrderLevel:
+      type: object
+      required: [amount, pricePerUnit, orders]
+      properties:
+        amount: { type: number }
+        pricePerUnit: { type: number }
+        orders: { type: number }
+
+    Flip:
+      type: object
+      required: [productId, name, buyAt, sellAt, margin, marginPct, hourlyVolume, potentialPerHour]
+      properties:
+        productId: { type: string }
+        name: { type: string }
+        buyAt: { type: number, description: Buy order price }
+        sellAt: { type: number, description: Sell offer price }
+        margin: { type: number, description: Per item after tax }
+        marginPct: { type: number }
+        hourlyVolume: { type: number }
+        potentialPerHour: { type: number, description: 'If you filled 1% of hourly volume. An illustration, not a promise.' }
+
+    CraftPlan:
+      type: object
+      required: [productId, name, sellPrice, cost, craft, profit]
+      properties:
+        productId: { type: string }
+        name: { type: string }
+        sellPrice: { type: [number, 'null'] }
+        cost: { type: [number, 'null'] }
+        craft: { type: boolean, description: Crafting is cheaper than buying }
+        profit: { type: [number, 'null'] }
+        parts:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    AuctionPrices:
+      type: object
+      required: [itemId, lowestBin, listings, updatedAt, history]
+      properties:
+        itemId: { type: string }
+        lowestBin: { type: [number, 'null'] }
+        listings: { type: integer }
+        updatedAt: { type: [string, 'null'], format: date-time }
+        history:
+          type: array
+          items:
+            type: object
+            required: [hour, median, min, sales]
+            properties:
+              hour: { type: string, format: date-time }
+              median: { type: number }
+              min: { type: number }
+              sales: { type: integer }
+
+    MethodSummary:
+      type: object
+      required: [id, name, family, category, tier, beta, unit, locked, value, requirements, rating]
+      properties:
+        id: { type: string, examples: ['flip:ENCHANTED_COAL', 'craft:ENCHANTED_COAL_BLOCK'] }
+        name: { type: string }
+        family: { type: string, enum: [curated, flip, npc, craft, custom] }
+        category: { type: string }
+        tier: { $ref: '#/components/schemas/Tier' }
+        beta: { type: boolean }
+        unit: { type: string, enum: [hour, action] }
+        locked: { type: boolean, description: Your plan doesn't include it; value is null }
+        value: { type: [number, 'null'], description: Coins per unit; null when locked or a price is missing }
+        requirements: { type: array, items: { type: string } }
+        rating:
+          type: [object, 'null']
+          required: [score, votes, difficulty, worksYes, worksNo]
+          properties:
+            score: { type: integer }
+            votes: { type: integer }
+            difficulty: { type: [number, 'null'] }
+            worksYes: { type: integer }
+            worksNo: { type: integer }
+
+    MethodDetail:
+      type: object
+      required: [id, name, tier, beta, unit, source, requirements, value, lines]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        tier: { $ref: '#/components/schemas/Tier' }
+        beta: { type: boolean }
+        unit: { type: string, enum: [hour, action] }
+        source: { type: string, description: Where the numbers come from }
+        requirements: { type: array, items: { type: string } }
+        value: { type: [number, 'null'] }
+        lines:
+          type: array
+          items:
+            type: object
+            required: [item, name, qty, side, source, unitPrice, total]
+            properties:
+              item: { type: string }
+              name: { type: string }
+              qty: { type: number }
+              side: { type: string, enum: [in, out] }
+              source: { type: string, enum: [instasell, instabuy, npc, bin] }
+              unitPrice: { type: [number, 'null'] }
+              total: { type: [number, 'null'] }
+
+    CustomMethodInput:
+      type: object
+      required: [name, spec]
+      properties:
+        name: { type: string, maxLength: 60 }
+        spec:
+          type: object
+          required: [unit, outputs, inputs]
+          properties:
+            unit: { type: string, enum: [hour, action] }
+            outputs: { type: array, items: { $ref: '#/components/schemas/PriceRef' } }
+            inputs: { type: array, items: { $ref: '#/components/schemas/PriceRef' } }
+            coins: { type: number }
+            requirements: { type: array, items: { type: string } }
+
+    PriceRef:
+      type: object
+      required: [item, qty]
+      properties:
+        item: { type: string }
+        qty: { type: number }
+        source: { type: string, enum: [instasell, instabuy, npc, bin] }
+
+    PlaySession:
+      type: object
+      required: [id, profileId, startedAt, endedAt, minutes, coins, coinsPerHour, activity, methodId]
+      properties:
+        id: { type: string, format: uuid }
+        profileId: { type: [string, 'null'] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        minutes: { type: integer }
+        coins: { type: [number, 'null'] }
+        coinsPerHour: { type: [number, 'null'] }
+        activity: { type: [string, 'null'], description: Only with activity insights on }
+        methodId: { type: [string, 'null'] }
+
+    MoneyDay:
+      type: object
+      required: [day, open, close, change]
+      properties:
+        day: { type: string }
+        open: { type: [number, 'null'] }
+        close: { type: [number, 'null'] }
+        change: { type: [number, 'null'] }
+
+    MoneyDays:
+      type: object
+      required: [days, best, worst, milestones]
+      properties:
+        days: { type: array, items: { $ref: '#/components/schemas/MoneyDay' } }
+        best: { type: array, items: { $ref: '#/components/schemas/MoneyDay' } }
+        worst: { type: array, items: { $ref: '#/components/schemas/MoneyDay' } }
+        milestones:
+          type: array
+          items:
+            type: object
+            required: [amount, day]
+            properties:
+              amount: { type: number }
+              day: { type: string }
+
+    PeriodPoint:
+      type: object
+      required: [offsetHours, change]
+      properties:
+        offsetHours: { type: number }
+        change: { type: number }
+
+    Annotation:
+      type: object
+      required: [id, profileId, at, text]
+      properties:
+        id: { type: string, format: uuid }
+        profileId: { type: string }
+        at: { type: string, format: date-time }
+        text: { type: string }
+
+    CoopView:
+      type: object
+      required: [profileId, days, members, ledger, feed, inviteUrl]
+      properties:
+        profileId: { type: string }
+        days: { type: integer }
+        inviteUrl: { type: string }
+        members:
+          type: array
+          items:
+            type: object
+            required: [uuid, username, active, isYou, onSkyStats, sharing, online, gain, share, leftAt]
+            properties:
+              uuid: { type: string }
+              username: { type: [string, 'null'] }
+              active: { type: boolean }
+              isYou: { type: boolean }
+              onSkyStats: { type: boolean }
+              sharing: { type: boolean, description: Shares coins with the co-op }
+              online: { type: boolean }
+              gain: { type: [number, 'null'] }
+              share: { type: [number, 'null'], description: Share of the co-op's positive gains }
+              leftAt: { type: [string, 'null'], format: date-time }
+        ledger:
+          type: array
+          items:
+            type: object
+            required: [uuid, at, amount]
+            properties:
+              uuid: { type: string }
+              at: { type: string, format: date-time }
+              amount: { type: number, description: Positive = deposit into the co-op bank }
+        feed:
+          type: array
+          items:
+            type: object
+            required: [uuid, startedAt, minutes, coins]
+            properties:
+              uuid: { type: string }
+              startedAt: { type: string, format: date-time }
+              minutes: { type: integer }
+              coins: { type: [number, 'null'] }
+
+    Leaderboard:
+      type: object
+      required: [board, period, scope, entries, you]
+      properties:
+        board: { type: string }
+        period: { type: string }
+        scope: { type: string }
+        entries:
+          type: array
+          items:
+            type: object
+            required: [rank, label, value, isYou]
+            properties:
+              rank: { type: integer }
+              label: { type: string }
+              value: { type: number }
+              isYou: { type: boolean }
+        you:
+          type: [object, 'null']
+          required: [rank, value]
+          properties:
+            rank: { type: integer }
+            value: { type: number }
+
+    Achievement:
+      type: object
+      required: [key, name, description, earnedAt]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        earnedAt: { type: [string, 'null'], format: date-time }
+
+    Wrapped:
+      type: object
+      required: [period, from, to, clippedByPlan, coinsGained, bestDay, daysPlayed, consistency, longestStreak, sessions, hoursPlayed, topActivity, topDrops, achievements]
+      properties:
+        period: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        clippedByPlan: { type: boolean }
+        coinsGained: { type: number }
+        bestDay:
+          type: [object, 'null']
+          required: [day, change]
+          properties:
+            day: { type: string }
+            change: { type: number }
+        daysPlayed: { type: integer }
+        consistency: { type: number }
+        longestStreak: { type: integer }
+        sessions: { type: integer }
+        hoursPlayed: { type: integer }
+        topActivity: { type: [string, 'null'] }
+        topDrops:
+          type: array
+          items:
+            type: object
+            required: [name, count]
+            properties:
+              name: { type: [string, 'null'] }
+              count: { type: integer }
+        achievements: { type: array, items: { type: string } }
+
+    ProfileLook:
+      type: object
+      required: [profileTheme, vanity, themes]
+      properties:
+        profileTheme: { type: [string, 'null'] }
+        vanity: { type: [string, 'null'] }
+        themes: { type: array, items: { type: string } }
+
+    Competition:
+      type: object
+      required: [id, guildId, name, startsAt, endsAt]
+      properties:
+        id: { type: string, format: uuid }
+        guildId: { type: string }
+        name: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+
+    GameRound:
+      type: object
+      required: [game, day, productId, startPrice]
+      properties:
+        game: { type: string }
+        day: { type: string }
+        productId: { type: string }
+        startPrice: { type: number }
+        endPrice: { type: [number, 'null'] }
+
+    RichCandidate:
+      type: object
+      required: [username, uuid, total]
+      properties:
+        username: { type: string }
+        uuid: { type: string }
+        total: { type: [number, 'null'] }

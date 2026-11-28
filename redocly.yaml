@@ -1,0 +1,7 @@
+extends:
+  - recommended
+rules:
+  no-server-example.com: off     # localhost server is intentional for local dev
+  operation-4xx-response: off    # health checks have no client errors; /v1 routes all define 4xx
+  info-license: off              # proprietary, no public license
+  security-defined: off          # public endpoints have no security; protected ones declare it per operation

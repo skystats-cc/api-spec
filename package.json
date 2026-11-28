@@ -1,0 +1,31 @@
+{
+  "name": "@skystats/api-client",
+  "version": "0.9.0",
+  "description": "SkyStats OpenAPI spec + typed client",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./openapi.yaml": "./openapi.yaml"
+  },
+  "files": ["dist", "openapi.yaml"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "generate": "openapi-typescript openapi.yaml -o src/schema.ts",
+    "build": "npm run generate && tsc",
+    "prepare": "npm run build",
+    "lint": "npx --yes @redocly/cli@2 lint openapi.yaml",
+    "check": "npm run generate && git diff --exit-code src/schema.ts",
+    "docs": "npx --yes @redocly/cli@2 build-docs openapi.yaml -o docs/index.html",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.7.2"
+  }
+}
