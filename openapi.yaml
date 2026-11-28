@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SkyStats API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Public API for skystats.cc. Hypixel SkyBlock bazaar and status data.
 
@@ -52,6 +52,8 @@ tags:
     description: Leaderboards, follows, achievements, Wrapped and public profile looks (all opt-in)
   - name: platform
     description: Public API keys, webhooks, feature flags, live data, batch requests and gifts
+  - name: staff
+    description: Staff panel (players with the SkyStats staff role in Discord). Every call is audit-logged.
   - name: bot
     description: Used by the SkyStats Discord bot on the internal network only (never through Cloudflare)
 
@@ -1316,7 +1318,7 @@ paths:
     get:
       tags: [market]
       operationId: getCraft
-      summary: 'Craft or buy: cheapest way to make an item (Pro)'
+      summary: '''Craft or buy: cheapest way to make an item (Pro)'''
       security: [{}, { webSession: [] }, { botKey: [] }]
       parameters:
         - $ref: '#/components/parameters/ProductId'
@@ -1712,7 +1714,7 @@ paths:
     get:
       tags: [insight]
       operationId: getCoop
-      summary: 'Co-op view: contributions, shared-bank ledger and activity (only what members share)'
+      summary: '''Co-op view: contributions, shared-bank ledger and activity (only what members share)'''
       security: [{ webSession: [] }, { botKey: [] }]
       parameters:
         - { name: profileId, in: path, required: true, schema: { type: string } }
@@ -2445,6 +2447,283 @@ paths:
                         channelId: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /v1/announcements:
+    get:
+      tags: [staff]
+      operationId: getAnnouncements
+      summary: Active site announcements (public)
+      responses:
+        '200':
+          description: Announcements
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [announcements]
+                properties:
+                  announcements:
+                    type: array
+                    items: { $ref: '#/components/schemas/Announcement' }
+  /v1/me/staff:
+    get:
+      tags: [staff]
+      operationId: getMyStaff
+      summary: Whether this player sees the staff panel
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [staff]
+                properties:
+                  staff: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/staff/overview:
+    get:
+      tags: [staff]
+      operationId: staffOverview
+      summary: Counts, plans, late jobs and data-quality checks
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/users:
+    get:
+      tags: [staff]
+      operationId: staffSearchUsers
+      summary: Find players by Minecraft name, UUID, Discord name or Discord id
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 40 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/users/{accountId}:
+    get:
+      tags: [staff]
+      operationId: staffUser
+      summary: 'One player: plan, Discord, counts and history (logged)'
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/users/{accountId}/membership:
+    post:
+      tags: [staff]
+      operationId: staffSetMembership
+      summary: Give Pro/Max for N days, or take it (free). Refused for Stripe subscribers.
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              additionalProperties: false
+              properties:
+                tier: { type: string, enum: [free, pro, max] }
+                days: { type: integer, minimum: 1, maximum: 366, default: 30 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/users/{accountId}/ban:
+    post:
+      tags: [staff]
+      operationId: staffSetBan
+      summary: Suspend or unsuspend a player
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [banned, reason]
+              additionalProperties: false
+              properties:
+                banned: { type: boolean }
+                reason: { type: string, minLength: 3, maxLength: 200 }
+      responses:
+        '204':
+          description: OK
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/announcements:
+    get:
+      tags: [staff]
+      operationId: staffListAnnouncements
+      summary: Recent announcements
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [staff]
+      operationId: staffCreateAnnouncement
+      summary: Post a site banner
+      security: [{ webSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              additionalProperties: false
+              properties:
+                message: { type: string, minLength: 3, maxLength: 300 }
+                level: { type: string, enum: [info, warning, critical], default: info }
+                hours: { type: [integer, 'null'], minimum: 1, maximum: 720, description: 'null = until ended' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Announcement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/announcements/{id}:
+    delete:
+      tags: [staff]
+      operationId: staffEndAnnouncement
+      summary: End an announcement now
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204':
+          description: OK
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/db:
+    get:
+      tags: [staff]
+      operationId: staffDbTables
+      summary: Tables (login-secret tables hidden) with columns and row estimates
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/db/{table}:
+    get:
+      tags: [staff]
+      operationId: staffDbRows
+      summary: Read-only page of a table; secret columns shown as •••
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: table, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: orderBy, in: query, schema: { type: string } }
+        - { name: desc, in: query, schema: { type: string, enum: ['true', 'false'], default: 'true' } }
+        - { name: column, in: query, schema: { type: string } }
+        - { name: value, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/flags:
+    get:
+      tags: [staff]
+      operationId: staffFlags
+      summary: Feature flags
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/flags/{key}:
+    put:
+      tags: [staff]
+      operationId: staffSetFlag
+      summary: Create or change a feature flag
+      security: [{ webSession: [] }]
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+                minTier: { type: [string, 'null'], enum: [free, pro, max, null] }
+                rolloutPercent: { type: integer, minimum: 0, maximum: 100 }
+                description: { type: [string, 'null'] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/staff/jobs:
+    get:
+      tags: [staff]
+      operationId: staffJobs
+      summary: Job health
+      security: [{ webSession: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffAny' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
 components:
   securitySchemes:
     modToken:
@@ -2625,6 +2904,21 @@ components:
         secret: { type: string, description: Keep in the browser; needed to poll }
         expiresAt: { type: string, format: date-time }
         pollIntervalSeconds: { type: integer }
+
+    StaffAny:
+      type: object
+      description: Staff-panel payload (shape documented in the server; internal)
+      additionalProperties: true
+
+    Announcement:
+      type: object
+      required: [id, message, level, startsAt, endsAt]
+      properties:
+        id: { type: string, format: uuid }
+        message: { type: string }
+        level: { type: string, enum: [info, warning, critical] }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: [string, 'null'], format: date-time }
 
     PendingSignup:
       type: object
