@@ -32,6 +32,7 @@ export type NewAlertRule = Schemas['NewAlertRule'];
 export type Goal = Schemas['Goal'];
 export type ApiKey = Schemas['ApiKey'];
 export type PendingSignup = Schemas['PendingSignup'];
+export type Announcement = Schemas['Announcement'];
 export type GuildSettings = Schemas['GuildSettings'];
 export type Webhook = Schemas['Webhook'];
 export type Notification = Schemas['Notification'];
@@ -178,6 +179,31 @@ export function createSkystatsClient({ baseUrl, timeoutMs = 5000, getToken, getH
       portal: () => unwrap(() => raw.POST('/v1/billing/portal')),
       gift: (tier: 'pro' | 'max') => unwrap(() => raw.POST('/v1/billing/gift', { body: { tier } })),
       redeem: (code: string) => unwrap(() => raw.POST('/v1/billing/redeem', { body: { code } })),
+    },
+
+    announcements: () => unwrap(() => raw.GET('/v1/announcements')),
+
+    /** Staff panel. The server checks the Discord staff role on every call. */
+    staff: {
+      me: () => unwrap(() => raw.GET('/v1/me/staff')),
+      overview: () => unwrap(() => raw.GET('/v1/staff/overview')),
+      searchUsers: (q: string) => unwrap(() => raw.GET('/v1/staff/users', { params: { query: { q } } })),
+      user: (accountId: string) => unwrap(() => raw.GET('/v1/staff/users/{accountId}', { params: { path: { accountId } } })),
+      setMembership: (accountId: string, tier: 'free' | 'pro' | 'max', days = 30) =>
+        unwrap(() => raw.POST('/v1/staff/users/{accountId}/membership', { params: { path: { accountId } }, body: { tier, days } })),
+      setBan: (accountId: string, banned: boolean, reason: string) =>
+        unwrap(() => raw.POST('/v1/staff/users/{accountId}/ban', { params: { path: { accountId } }, body: { banned, reason } })),
+      announcements: () => unwrap(() => raw.GET('/v1/staff/announcements')),
+      announce: (message: string, level: 'info' | 'warning' | 'critical', hours: number | null) =>
+        unwrap(() => raw.POST('/v1/staff/announcements', { body: { message, level, hours } })),
+      endAnnouncement: (id: string) => unwrap(() => raw.DELETE('/v1/staff/announcements/{id}', { params: { path: { id } } })),
+      tables: () => unwrap(() => raw.GET('/v1/staff/db')),
+      rows: (table: string, q: { limit?: number; offset?: number; orderBy?: string; desc?: 'true' | 'false'; column?: string; value?: string } = {}) =>
+        unwrap(() => raw.GET('/v1/staff/db/{table}', { params: { path: { table }, query: q } })),
+      flags: () => unwrap(() => raw.GET('/v1/staff/flags')),
+      setFlag: (key: string, body: { enabled: boolean; minTier?: 'free' | 'pro' | 'max' | null; rolloutPercent?: number; description?: string | null }) =>
+        unwrap(() => raw.PUT('/v1/staff/flags/{key}', { params: { path: { key } }, body })),
+      jobs: () => unwrap(() => raw.GET('/v1/staff/jobs')),
     },
 
     platform: {

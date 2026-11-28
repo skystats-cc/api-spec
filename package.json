@@ -1,6 +1,6 @@
 {
   "name": "@skystats/api-client",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "SkyStats OpenAPI spec + typed client",
   "private": true,
   "type": "module",
